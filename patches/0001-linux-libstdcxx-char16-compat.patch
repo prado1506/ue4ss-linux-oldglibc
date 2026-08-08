@@ -1,0 +1,127 @@
+diff --git a/deps/first/Helpers/include/Helpers/Casting.hpp b/deps/first/Helpers/include/Helpers/Casting.hpp
+index ab1ab40f..323a2764 100644
+--- a/deps/first/Helpers/include/Helpers/Casting.hpp
++++ b/deps/first/Helpers/include/Helpers/Casting.hpp
+@@ -2,6 +2,8 @@
+ 
+ #include <bit>
+ #include <cstdint>
++// std::is_pointer_v is used below and libc++ does not provide it transitively.
++#include <type_traits>
+ 
+ namespace RC::Helper::Casting
+ {
+diff --git a/deps/first/Helpers/include/Helpers/String.hpp b/deps/first/Helpers/include/Helpers/String.hpp
+index 1952504f..ab3edf9a 100644
+--- a/deps/first/Helpers/include/Helpers/String.hpp
++++ b/deps/first/Helpers/include/Helpers/String.hpp
+@@ -4,6 +4,9 @@
+ #include <codecvt>
+ #include <cwctype>
+ #include <locale>
++// std::lock_guard is used below. libstdc++ happens to pull it in through
++// <shared_mutex>, libc++ does not, so include it explicitly.
++#include <mutex>
+ #include <shared_mutex>
+ #include <string>
+ #include <unordered_map>
+diff --git a/deps/first/Helpers/src/SysError.cpp b/deps/first/Helpers/src/SysError.cpp
+index 8d352b31..a2833f32 100644
+--- a/deps/first/Helpers/src/SysError.cpp
++++ b/deps/first/Helpers/src/SysError.cpp
+@@ -67,7 +67,11 @@ namespace RC
+         auto result = std::regex_replace(to_wstring(std::system_error(ec).what()), std::wregex(L"(\t|\r?\n)"), L" ");
+         // right trim
+         result.erase(std::ranges::find_if(std::ranges::reverse_view(result), [](const CharType c) -> bool {
+-            return !std::isspace<CharType>(c, std::locale::classic());
++            // The standard only requires std::ctype for char and wchar_t, and
++            // libc++ provides no std::ctype<char16_t>. The trimmed characters
++            // are ASCII whitespace, so compare them directly.
++            return !(c == static_cast<CharType>(' ') || c == static_cast<CharType>('\t') || c == static_cast<CharType>('\n') ||
++                     c == static_cast<CharType>('\r') || c == static_cast<CharType>('\v') || c == static_cast<CharType>('\f'));
+         }).base(), result.end());
+ 
+         return ensure_str(result);
+diff --git a/deps/first/Helpers/src/Time.cpp b/deps/first/Helpers/src/Time.cpp
+index 73b04d4f..cdb3fcf6 100644
+--- a/deps/first/Helpers/src/Time.cpp
++++ b/deps/first/Helpers/src/Time.cpp
+@@ -20,6 +20,39 @@
+ 
+ namespace RC
+ {
++    namespace
++    {
++        // Chrono formatting goes through std::time_put, which libc++ only
++        // instantiates for char and wchar_t. This build's StringType is
++        // char16_t based, so the timestamp is rendered narrow and widened
++        // afterwards: both the format specifiers and the rendered digits are
++        // ASCII, so the round trip is lossless here.
++        template <typename TimePoint>
++        auto format_time_point(StringViewType format, const TimePoint& now) -> StringType
++        {
++#if defined(_LIBCPP_VERSION) && RC_IS_ANSI != 1
++            std::string narrow_format;
++            narrow_format.reserve(format.size());
++            for (const CharType character : format)
++            {
++                narrow_format.push_back(static_cast<char>(character));
++            }
++
++            const std::string rendered = fmt::vformat(narrow_format, fmt::make_format_args(now));
++
++            StringType result;
++            result.reserve(rendered.size());
++            for (const char character : rendered)
++            {
++                result.push_back(static_cast<CharType>(static_cast<unsigned char>(character)));
++            }
++            return result;
++#else
++            return fmt::vformat(fmt::detail::to_string_view(format), RC_STD_MAKE_FORMAT_ARGS(now));
++#endif
++        }
++    } // namespace
++
+     auto get_now_as_string(StringViewType format) -> StringType
+     {
+         bool use_local_time = true;
+@@ -34,20 +67,34 @@ namespace RC
+         {
+             try
+             {
++#if defined(__linux__)
++                // Two reasons not to use chrono's time zone support here: the
++                // local_time it produces has no fmt formatter for char16_t,
++                // which is this build's character type, and libc++ ships no
++                // time zone database at all. Shifting a system_clock time point
++                // by the POSIX offset keeps timestamps local and formats.
++                const auto utc_now = std::chrono::system_clock::now();
++                const std::time_t as_time_t = std::chrono::system_clock::to_time_t(utc_now);
++                std::tm local_tm{};
++                localtime_r(&as_time_t, &local_tm);
++                const auto now = utc_now + std::chrono::seconds(local_tm.tm_gmtoff);
++                return format_time_point(format, now);
++#else
+                 static const auto timezone = std::chrono::current_zone();
+                 const auto now = std::chrono::time_point_cast<std::chrono::system_clock::duration>(timezone->to_local(std::chrono::system_clock::now()));
+-                return fmt::vformat(fmt::detail::to_string_view(format), RC_STD_MAKE_FORMAT_ARGS(now));
++                return format_time_point(format, now);
++#endif
+             }
+             catch (std::runtime_error&)
+             {
+                 const auto now = std::chrono::system_clock::now();
+-                return fmt::vformat(fmt::detail::to_string_view(format), RC_STD_MAKE_FORMAT_ARGS(now));
++                return format_time_point(format, now);
+             }
+         }
+         else
+         {
+             const auto now = std::chrono::system_clock::now();
+-            return fmt::vformat(fmt::detail::to_string_view(format), RC_STD_MAKE_FORMAT_ARGS(now));
++            return format_time_point(format, now);
+         }
+     }
+ } // namespace RC
+\ No newline at end of file
