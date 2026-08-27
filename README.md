@@ -3,9 +3,17 @@
 Build recipe that produces a `libUE4SS.so` requiring only **GLIBC_2.28**, so it
 loads on the containers game server hosts actually run.
 
-Verified working on a live Palworld Dedicated Server `v1.0.2.101103`
-(BisectHosting / `venturenodellc/palworld` container), where the published
-Linux release could not load at all.
+Verified working on a live Palworld Dedicated Server (BisectHosting /
+`venturenodellc/palworld` container), where the published Linux release could
+not load at all. First measured on `v1.0.2.101103`; still running on
+`v1.0.3.101283`.
+
+**[`palworld/`](palworld/)** documents the artifact as it actually runs there —
+the exact deployed `libUE4SS.so` hash, the `UE4SS-settings.ini` in use, and the
+two runtime facts that cost the most to learn: `EngineTickResolveMethod` must be
+`VTable` or the server takes a `SIGSEGV`, and `ExecuteWithDelay` / `LoopAsync`
+are accepted but never fire. Release
+[`glibc228-v2`](../../releases/tag/glibc228-v2) is that byte-exact artifact.
 
 ## The problem
 
